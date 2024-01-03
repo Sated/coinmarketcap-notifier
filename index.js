@@ -15,7 +15,7 @@ const TELEGRAM_BOT_KEY = process.env.TELEGRAM_BOT_KEY
 const TELEGRAM_CHAT_ID = parseInt(process.env.TELEGRAM_CHAT_ID)
 const ROC_PERIOD_H = 24 // 24h
 const MAX_RETRY_COUNT = 1
-const RETRy_DELAY_MS = 1500
+const RETRY_DELAY_MS = 1500
 const LOCK_MESSAGE_OFFSET_MS = 2 * 60 * 60 * 1000 // 2h
 
 /**
@@ -99,8 +99,8 @@ async function fetchPrices(currencyId) {
     const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/detail/chart?id=${currencyId}&range=1M`
     const {data: {points}} = await (await fetch(url)).json()
     const prices = []
-    for (const [key, value] of Object.entries(points)) {
-        const [price, volume] = value['v']
+    for (const [, value] of Object.entries(points)) {
+        const [price] = value['v']
         prices.push(price)
     }
     return prices;
@@ -132,7 +132,7 @@ const handler = async function () {
             }
         } catch (error) {
             if (retryCount < MAX_RETRY_COUNT) {
-                await new Promise((resolve) => setTimeout(resolve, RETRy_DELAY_MS))
+                await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
                 await checkConditionForCurrency(id, slug, retryCount + 1)
             } else {
                 await sendMessage(`Error when fetching ${slug}: ${error || 'unknown'}`)
