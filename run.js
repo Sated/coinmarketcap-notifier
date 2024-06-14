@@ -1,5 +1,5 @@
-const { handler } = require("./index.js")
+const { handler } = require("./index.js");
 
 !(async () => {
-    await handler()
-})()
+  await handler();
+})();

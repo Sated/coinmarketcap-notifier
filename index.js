@@ -1,151 +1,80 @@
-require('dotenv').config()
-const { Roc } = require('./utils/roc.js')
-
-if (!process.env.TELEGRAM_BOT_KEY) {
-    console.error('Telegram Bot API key doesnt exist')
-    process.exit(1)
-}
-
-if (!process.env.TELEGRAM_CHAT_ID) {
-    console.error('Telegram chat id doesnt exist')
-    process.exit(1)
-}
-
-const TELEGRAM_BOT_KEY = process.env.TELEGRAM_BOT_KEY
-const TELEGRAM_CHAT_ID = parseInt(process.env.TELEGRAM_CHAT_ID)
-const ROC_PERIOD_H = 24 // 24h
-const MAX_RETRY_COUNT = 1
-const RETRY_DELAY_MS = 1500
-const LOCK_MESSAGE_OFFSET_MS = 2 * 60 * 60 * 1000 // 2h
+const { getRoc } = require('./utils/indicators/roc.js')
+const { sendMessage } = require('./utils/telegram.js')
+const { fetchPrices } = require('./utils/coinmarketcap.js')
+const { priceCache } = require('./utils/cache.js')
+const { currencies } = require('./config')
+const { MAX_RETRY_COUNT, RETRY_DELAY_MS} = require('./constants.js')
 
 /**
- * @typedef Currency
- * @type {Object}
- * @property {number} id - "id" of the currency
- * @property {boolean} watch - the currency should be watched
- * @property {function(number, number): boolean} [condition] - Optional function to check if the given price and rate of change (roc) satisfy a condition
+ * Yandex cloud handler
+ * https://cloud.yandex.ru/ru/docs/functions/lang/nodejs/
+ * @returns {Promise<void>}
  */
-
-/**
- * @typedef Currencies
- * @type {Object.<string, Currency>}
- */
-
-/** @type {Currencies} */
-const currencies = {
-    'swappi': {
-        id: 19544, // https://coinmarketcap.com/currencies/swappi-dex/
-        watch: true,
-        url: 'https://coinmarketcap.com/currencies/swappi-dex/',
-        condition: (price, roc) => {
-            return price > 0.0081 ||
-                price < 0.0074 ||
-                roc > 10;
-        }
-    },
-    'cfx': {
-        id: 7334,
-        url: 'https://coinmarketcap.com/currencies/conflux-network/',
-        watch: false
-    }
-}
-
-/**
- * Send message to Telegram
- * @param {string} msg - The text of the message
- * @returns Promise<any>
- */
-async function sendMessage(msg = '') {
-    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_KEY}/sendMessage?chat_id=${TELEGRAM_CHAT_ID}&text=${encodeURI(msg)}&parse_mode=html&disable_web_page_preview=true`;
-    return (await (await fetch(url)).json())
-}
-
-/**
- * The last message was sent
- * more than "LOCK_MESSAGE_OFFSET_MS" ago
- * @param {string} slug - "slug" of cryptocurrency from coinmarketcap api
- * @returns {Promise<boolean>}
- */
-async function canMessageSend(slug) {
-    try {
-        if (!canMessageSend.cachedResult) {
-            const url = `https://api.telegram.org/bot${TELEGRAM_BOT_KEY}/getUpdates`
-            const {result} = await (await fetch(url)).json()
-
-            canMessageSend.cachedResult = result.reverse()
-            canMessageSend.cachedResult = canMessageSend.cachedResult.filter(({channel_post}) => Boolean(channel_post))
-        }
-
-        for (const {channel_post: {chat, date, text}} of canMessageSend.cachedResult) {
-            if (chat.id !== TELEGRAM_CHAT_ID) continue
-            if (!text.includes(`${slug} |`)) continue
-            const messageDate = new Date(date * 1000)
-            const dateWithLockOffset = new Date(Date.now() - LOCK_MESSAGE_OFFSET_MS);
-            return messageDate < dateWithLockOffset
-        }
-
-        return true
-    } catch {
-        return true
-    }
-}
-
-/**
- * Recieve price vector from coinmarketcap
- * @param {number} currencyId - "id" of the cryptocurrency from coinmarketcap api
- * @returns {Promise<Array<number>>} - price vector
- */
-async function fetchPrices(currencyId) {
-    const url = `https://api.coinmarketcap.com/data-api/v3/cryptocurrency/detail/chart?id=${currencyId}&range=1M`
-    const {data: {points}} = await (await fetch(url)).json()
-    const prices = []
-    for (const [, value] of Object.entries(points)) {
-        const [price] = value['v']
-        prices.push(price)
-    }
-    return prices;
-}
-
 const handler = async function () {
-    async function checkConditionForCurrency(id, slug, retryCount = 0) {
-        try {
-            const prices = await fetchPrices(id)
-            const roc = new Roc(ROC_PERIOD_H)
-            const lastPrice = parseFloat(Number(prices.at(-1)).toFixed(5))
-            const lastRocValue = parseFloat(Number(prices.map(price => roc.nextValue(price)).at(-1)).toFixed(2))
+    /**
+     * Get message
+     * @param {string} slug
+     * @param {string} [message]
+     * @param {boolean} [isCompare]
+     * @param {number} [compareIndex]
+     * @param {object} [compareData]
+     * @returns {Promise<string>}
+     */
+    const getMessage = async ({ slug, message = '', isCompare = false, ...compareData }) => {
+        const { id, condition: conditionsFn, priceFractionDigits, url, compareWithSlug } = currencies[slug];
+        const prices = await fetchPrices(id);
+        const price = parseFloat(Number(prices.at(-1)).toFixed(priceFractionDigits));
+        const roc = getRoc(prices).at(-1);
 
-            const conditionsFn = currencies[slug].condition
-            if (conditionsFn(lastPrice, lastRocValue)) {
-                if (await canMessageSend(slug)) {
-                    let message = `<a href="${currencies[slug].url}">${slug}</a> | ${lastPrice}$ | ${(lastRocValue > 0) ? '+' : ''}${lastRocValue}%`
+        if (isCompare) {
+            const rocDiff = Math.abs(roc - compareData.roc).toFixed(1);
+            message += `\n<a href="${url}">${slug}</a> ${price}$ | ${roc}% | diff ${rocDiff}%`;
+        } else if (conditionsFn(price)) {
+            message += `<a href="${url}">${slug}</a> ${price}$ | ${roc}%`;
+        } else {
+            return ''
+        }
 
-                    if (slug === 'swappi') {
-                        const cfxLastPrice = (await fetchPrices(currencies.cfx.id))?.at(-1).toFixed(3)
-
-                        if (Boolean(cfxLastPrice)) {
-                            message += ` | cfx ${cfxLastPrice}$`
-                        }
-                    }
-
-                    await sendMessage(message)
-                }
+        const canCompare = compareWithSlug?.length && message
+        if (canCompare) {
+            for (const compareSlug of compareWithSlug) {
+                message = await getMessage({
+                    slug: compareSlug,
+                    message,
+                    isCompare: true,
+                    roc,
+                });
             }
+        }
+
+        priceCache.updatePrice(slug, prices.at(-1));
+        return message;
+    };
+
+    /**
+     * Send message to Telegram
+     * @param {string} slug
+     * @param {number} [retryCount]
+     */
+    const sendMessageToTelegram = async ({ slug, retryCount = 0 }) => {
+        try {
+            const message = await getMessage({ slug });
+            await sendMessage(message);
         } catch (error) {
             if (retryCount < MAX_RETRY_COUNT) {
-                await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
-                await checkConditionForCurrency(id, slug, retryCount + 1)
+                await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+                await sendMessageToTelegram({ slug, retryCount: retryCount + 1 });
             } else {
-                await sendMessage(`Error when fetching ${slug}: ${error || 'unknown'}`)
+                await sendMessage(`Error when fetching ${slug}: ${error || 'unknown'}`);
             }
         }
-    }
+    };
 
-    for (const [currencySlug, currencyParams] of Object.entries(currencies)) {
-        if (!currencyParams.watch) continue
-        const currencyId = currencyParams.id
-        await checkConditionForCurrency(currencyId, currencySlug)
+    for (const [slug, params] of Object.entries(currencies)) {
+        if (params.watch) {
+            await sendMessageToTelegram({ slug });
+        }
     }
 }
 
-// https://cloud.yandex.ru/ru/docs/functions/lang/nodejs/
-exports.handler = handler
+module.exports.handler = handler
