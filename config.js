@@ -18,24 +18,24 @@ const { priceCache } = require('./utils/cache.js');
 const currencies = {
     'ppi': {
         id: 19544,
-        watch: true,
+        watch: false,
         priceFractionDigits: 5,
         url: 'https://coinmarketcap.com/currencies/swappi-dex/',
-        compareWithSlug: ['cfx', 'abc'],
+    },
+    'cfx': {
+        id: 7334,
+        watch: true,
+        priceFractionDigits: 3,
+        url: 'https://coinmarketcap.com/currencies/conflux-network/',
+        compareWithSlug: ['ppi', 'abc'],
         condition: (price) => {
-            const prevPrice = priceCache.getPrice('ppi');
+            const prevPrice = priceCache.getPrice('cfx');
             if (!prevPrice) {
                 return true;
             }
             const deviation = prevPrice * 0.01;
             return price < prevPrice - deviation || price > prevPrice + deviation;
         }
-    },
-    'cfx': {
-        id: 7334,
-        watch: false,
-        priceFractionDigits: 3,
-        url: 'https://coinmarketcap.com/currencies/conflux-network/'
     },
     'abc': {
         id: 24497,
