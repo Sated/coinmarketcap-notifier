@@ -39,12 +39,12 @@ TELEGRAM_CHAT_ID=your-telegram-chat-id
 To start the bot, run the following command:
 
 ```bash
-node run.js
+npm run start
 ```
 
 The bot will fetch cryptocurrency prices from CoinMarketCap and send notifications to the specified Telegram chat based on the conditions specified in the `currencies` object.
 
-You can modify the `currencies` object in the `index.js` file to add or remove cryptocurrencies and customize the conditions for sending notifications.
+You can modify the `currencies` object in the `config.js` file to add or remove cryptocurrencies and customize the conditions for sending notifications.
 
 ## License
 
